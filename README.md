@@ -2,17 +2,17 @@
 
 A Rust SDK for building autonomous AI agents. Implements the agentic loop in-process — no CLI subprocess required.
 
-Supports **Anthropic Claude** natively, and any **OpenAI-compatible** API (Ollama, Groq, LM Studio, etc.) out of the box.
+Supports **Anthropic Claude** natively, plus any **OpenAI-compatible** API: Ollama, NVIDIA NIM, Groq, LM Studio, and more.
 
 ---
 
 ## Features
 
-- **Agentic loop** — runs multi-turn conversations with automatic tool execution until the model stops or `max_turns` is reached
-- **Streaming** — receive text deltas, tool progress, and cost events in real time via an async channel
+- **Agentic loop** — multi-turn conversations with automatic tool execution until the model stops or `max_turns` is reached
+- **Streaming** — text deltas, tool progress, and cost events delivered in real time via an async channel
 - **Built-in tools** — `Bash`, `Read`, `Edit`, `Write`, `Glob`, `Grep` (mirrors Claude Code's tool set)
 - **Custom tools** — implement the `Tool` trait and register with `AgentOptions::custom_tools`
-- **Provider flexibility** — Anthropic native SSE or OpenAI Chat Completions (translated automatically)
+- **Multi-provider** — Anthropic native SSE, Ollama `/api/chat`, OpenAI Chat Completions (auto-translated)
 - **Multi-turn memory** — conversation history persisted across `prompt()` calls on the same `Agent`
 - **Permission system** — `BypassPermissions`, `Default`, or rule-based access control per tool
 - **Cost tracking** — per-model token pricing, cumulative `$USD` reporting
@@ -24,8 +24,7 @@ Supports **Anthropic Claude** natively, and any **OpenAI-compatible** API (Ollam
 
 ```toml
 [dependencies]
-claude-agent-sdk = { path = "." }          # local
-# claude-agent-sdk = "0.1"                 # crates.io (coming soon)
+claude-agent-sdk = { path = "." }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
@@ -70,47 +69,60 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Set the environment variable before running:
-
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 cargo run --example simple
 ```
 
-### OpenAI / Ollama / Groq
-
-```rust
-use claude_agent_sdk::{Agent, AgentOptions, ApiClientConfig};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let mut agent = Agent::new(AgentOptions {
-        // Local Ollama
-        api: ApiClientConfig::OpenAICompat {
-            api_key: String::new(),                          // not required by Ollama
-            base_url: "http://localhost:11434".into(),
-        },
-        model: "qwen3.5:latest".into(),
-        ..Default::default()
-    }).await?;
-
-    let result = agent.prompt("Summarise the Rust ownership model in 3 bullet points.").await?;
-    println!("{}", result.text);
-
-    agent.close().await?;
-    Ok(())
-}
-```
+### Ollama (native `/api/chat`)
 
 ```bash
+export OLLAMA_BASE_URL=http://localhost:11434
+export OLLAMA_MODEL=qwen3.5:latest
+cargo run --example simple
+```
+
+`from_env()` detects `OLLAMA_BASE_URL` and selects the Ollama native provider automatically.
+
+### Ollama via Anthropic Messages API (`/v1/messages`)
+
+Some Ollama-compatible servers expose the Anthropic Messages API format. Set `ANTHROPIC_API_FORMAT=anthropic`:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:11434
+export ANTHROPIC_AUTH_TOKEN=ollama
+export ANTHROPIC_MODEL=qwen3.5:latest
+export ANTHROPIC_NUM_CTX=65535
+export ANTHROPIC_API_FORMAT=anthropic
+cargo run --example simple
+```
+
+### NVIDIA NIM
+
+```bash
+# Credentials are read from NVIDIA_* env vars (set once in .cargo/config.toml)
+cargo run --example nvidia_nim
+```
+
+Or inline:
+
+```bash
+NVIDIA_API_KEY=nvapi-... cargo run --example nvidia_nim
+```
+
+The `nvidia_nim` example uses `Grep` tool use end-to-end and displays `<think>…</think>` reasoning blocks from GLM4.7.
+
+### OpenAI / Groq / LM Studio
+
+```bash
+# OpenAI
+OPENAI_API_KEY=sk-... cargo run --example openai -- openai
+
 # Groq
 OPENAI_API_KEY=gsk_... cargo run --example openai -- groq
 
-# Ollama (local)
-cargo run --example openai -- ollama
-
-# OpenAI
-OPENAI_API_KEY=sk-... cargo run --example openai -- openai
+# LM Studio (local)
+cargo run --example openai -- lmstudio
 ```
 
 ---
@@ -169,7 +181,6 @@ use async_trait::async_trait;
 use claude_agent_sdk::{
     Agent, AgentOptions, ApiClientConfig,
     Tool, ToolError, ToolInputSchema, ToolProgressSender, ToolResult, ToolUseContext,
-    PermissionCheckResult,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -180,9 +191,7 @@ struct WeatherTool;
 impl Tool for WeatherTool {
     fn name(&self) -> &str { "GetWeather" }
 
-    fn description(&self) -> &str {
-        "Get the current weather for a city."
-    }
+    fn description(&self) -> &str { "Get the current weather for a city." }
 
     fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema {
@@ -256,7 +265,7 @@ agent.close().await?;
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `api` | `ApiClientConfig` | `FromEnv` | API provider and credentials |
-| `model` | `String` | `claude-sonnet-4-6` (or `ANTHROPIC_MODEL` env) | Model ID |
+| `model` | `String` | provider default | Model ID (overrides env-based default) |
 | `system_prompt` | `Option<String>` | `None` | System prompt prepended to every conversation |
 | `max_turns` | `u32` | `10` | Maximum API calls before stopping |
 | `permission_mode` | `PermissionMode` | `Default` | Tool permission enforcement level |
@@ -270,35 +279,91 @@ agent.close().await?;
 
 ```rust
 pub enum ApiClientConfig {
-    /// Auto-detect from ANTHROPIC_API_KEY / OPENAI_API_KEY environment variables
+    /// Auto-detect from environment variables (see table below)
     FromEnv,
     /// Anthropic Messages API (native SSE)
-    Anthropic(String),           // API key
-    /// OpenAI Chat Completions API
-    OpenAI(String),              // API key
-    /// Any OpenAI-compatible endpoint (Ollama, Groq, LM Studio, …)
-    OpenAICompat { api_key: String, base_url: String },
+    Anthropic { api_key: String },
+    /// Ollama native /api/chat
+    Ollama { base_url: String, model: Option<String> },
+    /// OpenAI Chat Completions (or any compatible endpoint)
+    OpenAICompat { api_key: String, base_url: String, extra_body: Option<serde_json::Value> },
 }
 ```
 
-### Environment variables
+### Environment variables and `from_env()` detection order
+
+`ApiClientConfig::FromEnv` detects the active provider in this order:
+
+| Priority | Variable | Provider selected |
+|---|---|---|
+| 1 | `OLLAMA_BASE_URL` | Ollama native (`/api/chat`) |
+| 2 | `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_FORMAT=anthropic` | Anthropic provider at custom URL |
+| 2 | `ANTHROPIC_BASE_URL` (no format flag) | OpenAI-compat at that URL |
+| 3 | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` | Anthropic (api.anthropic.com) |
+| 4 | `OPENAI_API_KEY` | OpenAI-compat (api.openai.com) |
+
+Full variable reference:
 
 | Variable | Description |
 |---|---|
+| `OLLAMA_BASE_URL` | Ollama server URL (e.g. `http://localhost:11434`) |
+| `OLLAMA_MODEL` | Model name for Ollama native provider |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `ANTHROPIC_BASE_URL` | Override base URL → selects OpenAI-compat provider |
-| `ANTHROPIC_MODEL` | Default model (overrides compile-time default) |
 | `ANTHROPIC_AUTH_TOKEN` | Alternative to `ANTHROPIC_API_KEY` |
+| `ANTHROPIC_BASE_URL` | Custom Anthropic-compatible base URL |
+| `ANTHROPIC_MODEL` | Model name when using an Anthropic provider |
+| `ANTHROPIC_API_FORMAT` | Set to `anthropic` to force Anthropic Messages API format |
+| `ANTHROPIC_NUM_CTX` | Context window size (forwarded as `options.num_ctx`) |
+| `NVIDIA_API_KEY` | NVIDIA NIM API key (`nvapi-…`) |
+| `NVIDIA_BASE_URL` | NIM endpoint (default: `https://integrate.api.nvidia.com/v1`) |
+| `NVIDIA_MODEL` | Model name (default: `z-ai/glm4.7`) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPENAI_BASE_URL` | Override OpenAI base URL |
 | `NO_PROXY` | Comma-separated hosts that bypass the HTTP proxy |
 
-For local development you can put these in `.cargo/config.toml`:
+### Persistent dev config (`.cargo/config.toml`)
+
+Put always-on settings in `.cargo/config.toml` (gitignored alongside `.env.*`):
 
 ```toml
 [env]
-ANTHROPIC_BASE_URL   = "http://localhost:11434"
-ANTHROPIC_MODEL      = "qwen3.5:latest"
+NO_PROXY        = { value = "localhost,127.0.0.1", force = true }
+NVIDIA_API_KEY  = "nvapi-..."
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL    = "z-ai/glm4.7"
+```
+
+Per-provider settings go in `.env.*` files (sourced at test time):
+
+```bash
+# .env.ollama
+export OLLAMA_BASE_URL=http://localhost:11434
+export OLLAMA_MODEL=qwen3.5:latest
+
+# .env.anthropic-ollama
+export ANTHROPIC_BASE_URL=http://localhost:11434
+export ANTHROPIC_AUTH_TOKEN=ollama
+export ANTHROPIC_MODEL=qwen3.5:latest
+export ANTHROPIC_NUM_CTX=65535
+export ANTHROPIC_API_FORMAT=anthropic
+```
+
+---
+
+## Running the examples and tests
+
+A `Makefile` covers all provider configurations:
+
+```bash
+make test-unit                         # Unit tests (no network)
+make test-ollama                       # Ollama native integration tests
+make test-anthropic-ollama             # Ollama via Anthropic API format
+make run-nvidia                        # NVIDIA NIM tool-use smoke test
+make test-all                          # All of the above in sequence
+
+# Run a specific example against a provider:
+make run-ollama EXAMPLE=simple
+make run-anthropic-ollama EXAMPLE=streaming
 ```
 
 ---
@@ -308,12 +373,15 @@ ANTHROPIC_MODEL      = "qwen3.5:latest"
 | Variant | When emitted |
 |---|---|
 | `System` | Once at start — model, tool list, session ID |
-| `ContentDelta` | Each streamed text chunk from the model |
+| `Assistant` | Start of each assistant turn |
+| `ContentDelta` | Each streamed text or thinking chunk |
 | `ToolUse` | Model requested a tool call |
-| `ToolProgress` | Tool is still running (periodic heartbeat) |
+| `ToolProgress` | Tool still running (periodic heartbeat) |
 | `ToolResult` | Tool finished (success or error) |
 | `Result` | Final summary — turns, tokens, cost, full message history |
 | `Error` | Unrecoverable error |
+
+`ContentDelta` carries either `TextDelta { text }` or `ThinkingDelta { thinking }`. Both Ollama reasoning (`reasoning`) and NVIDIA NIM reasoning (`reasoning_content`) are normalised to `ThinkingDelta`.
 
 ---
 
@@ -328,12 +396,12 @@ ANTHROPIC_MODEL      = "qwen3.5:latest"
 | `Glob` | Find files by glob pattern |
 | `Grep` | Search file contents with regex (ripgrep-style) |
 
-Tools can be selectively enabled or disabled per agent:
+Filter which tools the model can use:
 
 ```rust
 AgentOptions {
-    allowed_tools: Some(vec!["Bash".into(), "Read".into()]),  // only these two
-    disallowed_tools: vec!["Write".into()],                   // or block specific ones
+    allowed_tools: Some(vec!["Grep".into(), "Read".into()]),  // only these two
+    disallowed_tools: vec!["Bash".into()],                    // or block specific ones
     ..Default::default()
 }
 ```
@@ -344,26 +412,21 @@ AgentOptions {
 
 | Mode | Behaviour |
 |---|---|
-| `Default` | Prompts the user for dangerous operations (write, bash, etc.) |
+| `Default` | Prompts for dangerous operations (write, bash, etc.) |
 | `BypassPermissions` | All tools run without prompts (use in trusted automation) |
 | `Plan` | Read-only tools allowed; write tools blocked |
 
 ---
 
-## Running the tests
+## Provider quirks
 
-```bash
-# Unit tests
-cargo test
+See [`docs/provider-quirks.md`](docs/provider-quirks.md) for a detailed breakdown of non-standard behaviour discovered during integration testing, including GLM4.7 (NVIDIA NIM) specifics:
 
-# Integration tests against a local Ollama server
-# (reads connection details from .cargo/config.toml automatically)
-cargo test --test ollama_integration -- --nocapture
-
-# Override for a different server
-ANTHROPIC_BASE_URL=http://other:11434 ANTHROPIC_MODEL=llama3 \
-  cargo test --test ollama_integration
-```
+- `finish_reason` always `null` → SDK synthesises stop reason on `[DONE]`
+- Complete tool call delivered in a single chunk
+- Chain-of-thought in `reasoning_content` (not `reasoning`)
+- `<tool_call>` tags echoed in `content` on multi-turn responses
+- Usage object arrives in a separate empty-choices chunk
 
 ---
 

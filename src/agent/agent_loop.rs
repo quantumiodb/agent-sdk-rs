@@ -296,6 +296,19 @@ pub async fn run_loop(params: AgentLoopParams) -> Result<(), AgentError> {
             }
         }
 
+        // Sync parsed tool inputs back into assistant_content so that the
+        // SDKMessage::Assistant carries fully-parsed ToolUse.input objects
+        // (streaming accumulates them as Value::String).
+        for tu in &tool_uses {
+            for block in assistant_content.iter_mut() {
+                if let ContentBlock::ToolUse { id, input, .. } = block {
+                    if *id == tu.id {
+                        *input = tu.input.clone();
+                    }
+                }
+            }
+        }
+
         // Build and record assistant message.
         let assistant_msg = Message {
             id: uuid::Uuid::new_v4(),

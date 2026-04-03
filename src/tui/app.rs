@@ -591,9 +591,23 @@ fn detect_provider(options: &AgentOptions) -> String {
 ///   file: /src/main.rs     (Read)
 ///   pattern: "TODO" path: src/  (Grep)
 fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
+    // The input may be a proper JSON object, or a JSON string that needs parsing
+    // (OpenAI-compat streaming accumulates input as Value::String).
+    let parsed: Option<serde_json::Value>;
     let obj = match input.as_object() {
         Some(o) => o,
-        None => return format!("{input}"),
+        None => {
+            // Try parsing a string value as JSON.
+            if let Some(s) = input.as_str() {
+                parsed = serde_json::from_str(s).ok();
+                match parsed.as_ref().and_then(|v| v.as_object()) {
+                    Some(o) => o,
+                    None => return s.to_string(),
+                }
+            } else {
+                return format!("{input}");
+            }
+        }
     };
 
     match tool_name {

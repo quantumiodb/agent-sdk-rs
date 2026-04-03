@@ -227,7 +227,9 @@ impl ApiClient {
         //      (default)                        → OpenAICompatProvider
         // 3. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN (no BASE_URL)
         //                               → AnthropicProvider (api.anthropic.com)
-        // 4. OPENAI_API_KEY             → OpenAICompatProvider
+        // 4. NVIDIA_API_KEY             → OpenAICompatProvider (NVIDIA NIM)
+        //                                 (NVIDIA_BASE_URL or integrate.api.nvidia.com)
+        // 5. OPENAI_API_KEY             → OpenAICompatProvider
         //                                 (OPENAI_BASE_URL if set, else api.openai.com)
         //
         // ── Ollama (native /api/chat protocol) ───────────────────────────────
@@ -285,6 +287,13 @@ impl ApiClient {
             return Ok(Self::anthropic(key));
         }
 
+        // NVIDIA NIM (OpenAI-compatible)
+        if let Ok(key) = std::env::var("NVIDIA_API_KEY") {
+            let base_url = std::env::var("NVIDIA_BASE_URL")
+                .unwrap_or_else(|_| "https://integrate.api.nvidia.com/v1".to_string());
+            return Ok(Self::openai_compat(key, base_url));
+        }
+
         // OpenAI / compatible
         if let Ok(key) = std::env::var("OPENAI_API_KEY") {
             let base_url = std::env::var("OPENAI_BASE_URL")
@@ -293,7 +302,7 @@ impl ApiClient {
         }
 
         Err(ApiError::Configuration(
-            "No API key found. Set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or OPENAI_API_KEY."
+            "No API key found. Set ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, NVIDIA_API_KEY, or OPENAI_API_KEY."
                 .to_string(),
         ))
     }

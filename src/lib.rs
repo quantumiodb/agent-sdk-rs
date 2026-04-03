@@ -45,6 +45,9 @@ pub mod hooks;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
+#[cfg(feature = "tui")]
+pub mod tui;
+
 // ─── Top-level re-exports ─────────────────────────────────────────────────────
 
 // Agent

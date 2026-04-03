@@ -6,14 +6,15 @@ license = "MIT OR Apache-2.0"
 description = "Rust SDK for building autonomous AI agents powered by Claude"
 
 [features]
-default = ["built-in-tools", "mcp"]
+default = ["built-in-tools", "mcp", "tui"]
 built-in-tools = ["tokio/process", "grep-regex", "grep-searcher", "ignore", "globset", "similar"]
 mcp = ["tokio-tungstenite"]
 cost-tracking = []
 web-tools = ["reqwest/cookies", "scraper"]
 subagents = []
 hooks = []
-all = ["built-in-tools", "mcp", "cost-tracking", "web-tools", "subagents", "hooks"]
+tui = ["ratatui", "crossterm"]
+all = ["built-in-tools", "mcp", "cost-tracking", "web-tools", "subagents", "hooks", "tui"]
 
 [dependencies]
 # Core
@@ -45,6 +46,10 @@ tokio-tungstenite = { version = "0.24", optional = true }
 
 # Web tools (web-tools feature)
 scraper = { version = "0.20", optional = true }
+
+# TUI (tui feature)
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

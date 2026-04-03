@@ -222,6 +222,9 @@ impl Default for AgentOptions {
         {
             std::env::var("ANTHROPIC_MODEL")
                 .unwrap_or_else(|_| "claude-sonnet-4-6".to_string())
+        } else if std::env::var("NVIDIA_API_KEY").is_ok() {
+            std::env::var("NVIDIA_MODEL")
+                .unwrap_or_else(|_| "z-ai/glm4.7".to_string())
         } else if std::env::var("OPENAI_API_KEY").is_ok() {
             std::env::var("OPENAI_MODEL")
                 .unwrap_or_else(|_| "gpt-4o".to_string())

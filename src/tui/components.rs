@@ -410,6 +410,10 @@ impl Widget for HelpOverlay {
                 Span::styled("Send message", Style::default().fg(FG_TEXT)),
             ]),
             Line::from(vec![
+                Span::styled("  Esc         ", Style::default().fg(ACCENT_BLUE)),
+                Span::styled("Interrupt running agent", Style::default().fg(FG_TEXT)),
+            ]),
+            Line::from(vec![
                 Span::styled("  Ctrl+C      ", Style::default().fg(ACCENT_BLUE)),
                 Span::styled("Quit", Style::default().fg(FG_TEXT)),
             ]),

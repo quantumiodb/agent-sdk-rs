@@ -186,6 +186,10 @@ impl TuiApp {
                     KeyCode::Char('c') if ctrl => {
                         self.state.should_quit = true;
                     }
+                    // Interrupt the running agent loop.
+                    KeyCode::Esc => {
+                        self.interrupt_agent();
+                    }
                     // Toggle help.
                     KeyCode::Char('h') if ctrl => {
                         self.state.show_help = !self.state.show_help;
@@ -497,6 +501,23 @@ impl TuiApp {
             let _ = execute!(self.terminal.backend_mut(), DisableMouseCapture);
         } else {
             let _ = execute!(self.terminal.backend_mut(), EnableMouseCapture);
+        }
+    }
+
+    /// Interrupt a running agent loop (Esc key).
+    ///
+    /// Aborts the tokio task, drains the receiver, and resets state to Idle.
+    /// Does nothing if no agent is currently running.
+    fn interrupt_agent(&mut self) {
+        let was_running = self.agent_handle.is_some() || self.agent_rx.is_some();
+        if let Some(handle) = self.agent_handle.take() {
+            handle.abort();
+        }
+        self.agent_rx = None;
+        if was_running {
+            self.state.finish_streaming();
+            self.state.status = AgentStatus::Idle;
+            self.state.push_message(ChatRole::System, "Interrupted.");
         }
     }
 

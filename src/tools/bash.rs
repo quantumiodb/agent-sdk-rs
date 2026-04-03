@@ -43,6 +43,60 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// Maximum output size in bytes before truncation.
 const MAX_OUTPUT_BYTES: usize = 512_000;
 
+/// Detect the best available shell.
+///
+/// Priority order (mirrors the TypeScript implementation):
+/// 1. `CLAUDE_CODE_SHELL` env var (explicit override)
+/// 2. `SHELL` env var (user's login shell, if bash or zsh)
+/// 3. Probe `/bin/zsh`, `/usr/bin/zsh`, `/bin/bash`, `/usr/bin/bash`
+///
+/// Only bash and zsh are accepted; other shells (fish, tcsh, etc.) are
+/// skipped because they have incompatible syntax.
+fn detect_shell() -> String {
+    // 1. Explicit override.
+    if let Ok(shell) = std::env::var("CLAUDE_CODE_SHELL") {
+        let shell = shell.trim().to_string();
+        if !shell.is_empty() && is_valid_shell(&shell) {
+            return shell;
+        }
+    }
+
+    // 2. User's login shell.
+    if let Ok(shell) = std::env::var("SHELL") {
+        let shell = shell.trim().to_string();
+        if is_bash_or_zsh(&shell) && is_valid_shell(&shell) {
+            return shell;
+        }
+    }
+
+    // 3. Probe well-known paths.
+    for candidate in &["/bin/zsh", "/usr/bin/zsh", "/bin/bash", "/usr/bin/bash"] {
+        if is_valid_shell(candidate) {
+            return candidate.to_string();
+        }
+    }
+
+    // Fallback — should always exist on Linux/macOS.
+    "/bin/sh".to_string()
+}
+
+/// Returns true if the path ends with `bash` or `zsh`.
+fn is_bash_or_zsh(path: &str) -> bool {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    name == "bash" || name == "zsh"
+}
+
+/// Returns true if the file exists and is executable.
+fn is_valid_shell(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -194,10 +248,11 @@ impl Tool for BashTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_MS);
 
-        debug!(command = %command, timeout_ms = %timeout_ms, "Executing bash command");
+        let shell = detect_shell();
+        debug!(command = %command, timeout_ms = %timeout_ms, shell = %shell, "Executing bash command");
 
         // Build the child process
-        let child = tokio::process::Command::new("/bin/bash")
+        let child = tokio::process::Command::new(&shell)
             .arg("-c")
             .arg(command)
             .current_dir(&ctx.working_dir)

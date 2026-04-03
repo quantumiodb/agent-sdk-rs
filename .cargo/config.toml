@@ -9,16 +9,17 @@
 # Docs: https://doc.rust-lang.org/cargo/reference/config.html#env
 
 [env]
-# Ollama — native /api/chat protocol (OllamaProvider).
-# Takes priority over ANTHROPIC_BASE_URL in from_env().
-OLLAMA_BASE_URL = "http://yjhnupt.tech:11434"
-OLLAMA_MODEL    = "qwen3.5:latest"
-
-# Ensure yjhnupt.tech bypasses the system proxy regardless of shell state.
+# Proxy bypass — always needed regardless of provider.
 NO_PROXY = { value = "code.hashdata.xyz,localhost,127.0.0.1,192.168.198.78,yjhnupt.tech", force = true }
 
-# NVIDIA NIM — used by examples/nvidia_nim.rs and `cargo run --example openai -- nvidia`.
-# Dedicated var names avoid conflicts with OPENAI_API_KEY / ANTHROPIC_* in the shell.
+# NVIDIA NIM — dedicated vars, never conflict with ANTHROPIC_* or OLLAMA_*.
 NVIDIA_API_KEY  = "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"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_MODEL    = "z-ai/glm4.7"
+#
+# Provider-specific vars (OLLAMA_*, ANTHROPIC_*) are NOT set here.
+# Source the appropriate .env.* file before running:
+#   source .env.ollama              # Ollama native
+#   source .env.anthropic-ollama    # Ollama via Anthropic API format
+# Or set them inline:
+#   OLLAMA_BASE_URL=http://... cargo run --example simple

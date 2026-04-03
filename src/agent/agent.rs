@@ -209,12 +209,25 @@ pub struct AgentOptions {
 
 impl Default for AgentOptions {
     fn default() -> Self {
-        // Model resolution — checked in priority order:
-        //   OLLAMA_MODEL > ANTHROPIC_MODEL > OPENAI_MODEL > default
-        let model = std::env::var("OLLAMA_MODEL")
-            .or_else(|_| std::env::var("ANTHROPIC_MODEL"))
-            .or_else(|_| std::env::var("OPENAI_MODEL"))
-            .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+        // Pick the model env var that matches the active provider,
+        // mirroring the same detection order as ApiClient::from_env().
+        let model = if std::env::var("OLLAMA_BASE_URL").is_ok() {
+            std::env::var("OLLAMA_MODEL")
+                .unwrap_or_else(|_| "llama3.2".to_string())
+        } else if std::env::var("ANTHROPIC_BASE_URL").is_ok() {
+            std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-sonnet-4-6".to_string())
+        } else if std::env::var("ANTHROPIC_API_KEY").is_ok()
+            || std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok()
+        {
+            std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-sonnet-4-6".to_string())
+        } else if std::env::var("OPENAI_API_KEY").is_ok() {
+            std::env::var("OPENAI_MODEL")
+                .unwrap_or_else(|_| "gpt-4o".to_string())
+        } else {
+            "claude-sonnet-4-6".to_string()
+        };
         Self {
             api: ApiClientConfig::FromEnv,
             model,

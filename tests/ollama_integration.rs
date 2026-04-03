@@ -79,6 +79,7 @@ fn from_env_detects_anthropic_base_url() {
     // Temporarily set env vars just for this test (serial, no side-effects on other tests)
     std::env::set_var("ANTHROPIC_BASE_URL", "http://yjhnupt.tech:11434");
     std::env::set_var("ANTHROPIC_AUTH_TOKEN", "test-key");
+    std::env::remove_var("OLLAMA_BASE_URL");   // must not shadow ANTHROPIC_BASE_URL
     std::env::remove_var("ANTHROPIC_API_KEY");
     std::env::remove_var("OPENAI_API_KEY");
 
@@ -88,6 +89,8 @@ fn from_env_detects_anthropic_base_url() {
     // Clean up
     std::env::remove_var("ANTHROPIC_BASE_URL");
     std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
+    // Restore OLLAMA_BASE_URL so subsequent tests still use it.
+    std::env::set_var("OLLAMA_BASE_URL", "http://yjhnupt.tech:11434");
 }
 
 /// `ANTHROPIC_MODEL` should set the default model in AgentOptions::default().

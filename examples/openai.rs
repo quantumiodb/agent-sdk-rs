@@ -13,6 +13,9 @@
 //!   # Local Ollama
 //!   OPENAI_BASE_URL=http://localhost:11434 \
 //!     cargo run --example openai -- ollama
+//!
+//!   # NVIDIA NIM (https://integrate.api.nvidia.com/v1)
+//!   NVIDIA_API_KEY=nvapi-... cargo run --example openai -- nvidia
 
 use claude_agent_sdk::{Agent, AgentOptions, ApiClientConfig, ContentDelta, SDKMessage};
 
@@ -38,23 +41,33 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "http://localhost:11434".into()),
             extra_body: None,
         },
+        "nvidia" => ApiClientConfig::OpenAICompat {
+            api_key: std::env::var("NVIDIA_API_KEY").expect("NVIDIA_API_KEY not set"),
+            base_url: std::env::var("NVIDIA_BASE_URL")
+                .unwrap_or_else(|_| "https://integrate.api.nvidia.com/v1".into()),
+            extra_body: None,
+        },
         _ => {
             // Auto-detect from environment (ANTHROPIC_API_KEY or OPENAI_API_KEY)
             ApiClientConfig::FromEnv
         }
     };
 
-    // Use an OpenAI model name (or Claude model if using Anthropic)
+    // Use an OpenAI model name (or Claude model if using Anthropic).
+    // For NVIDIA NIM and the auto path, honour OPENAI_MODEL if set.
     let model = match provider {
-        "groq" => "llama-3.1-70b-versatile",
-        "ollama" => "llama3.2",
-        "openai" => "gpt-4o",
-        _ => "claude-sonnet-4-6", // default to Claude for Anthropic
+        "groq" => "llama-3.1-70b-versatile".to_string(),
+        "ollama" => "llama3.2".to_string(),
+        "openai" => "gpt-4o".to_string(),
+        "nvidia" => std::env::var("NVIDIA_MODEL")
+            .unwrap_or_else(|_| "z-ai/glm4.7".to_string()),
+        _ => std::env::var("OPENAI_MODEL")
+            .unwrap_or_else(|_| "claude-sonnet-4-6".to_string()),
     };
 
     let mut agent = Agent::new(AgentOptions {
         api: api_config,
-        model: model.into(),
+        model: model.clone(),
         // Disable built-in tools for this simple demo
         disallowed_tools: vec![
             "Bash".into(),

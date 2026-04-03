@@ -161,11 +161,14 @@ struct OaiDelta {
     role: Option<String>,
     #[serde(default)]
     content: Option<String>,
-    /// Thinking/reasoning output from models like Qwen3, DeepSeek-R1 via Ollama.
-    /// Ollama uses `reasoning` (not `reasoning_content`) in the delta.
-    /// These models put their chain-of-thought here; the final answer goes in `content`.
+    /// Thinking/reasoning output — field name varies by provider:
+    /// - Ollama (Qwen3, DeepSeek-R1): `reasoning`
+    /// - NVIDIA NIM (GLM4.7) and some OpenAI-compat endpoints: `reasoning_content`
+    /// Both are mapped to ThinkingDelta; whichever is non-null wins.
     #[serde(default)]
     reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OaiToolCallDelta>>,
 }
@@ -199,6 +202,27 @@ struct OaiUsage {
     #[serde(default)]
     #[allow(dead_code)]
     total_tokens: u64,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Return the index from which `s` ends with a non-empty proper prefix of `tag`.
+///
+/// Used to hold back the tail of a text chunk that might be the start of a
+/// `<tool_call>` or `</tool_call>` tag that will complete in the next chunk.
+fn find_partial_prefix(s: &str, tag: &str) -> usize {
+    let bytes = s.as_bytes();
+    let tag_bytes = tag.as_bytes();
+    // Walk backwards: find the longest suffix of `s` that is a proper prefix of `tag`.
+    for start in (0..s.len()).rev() {
+        let suffix = &bytes[start..];
+        if suffix.len() < tag_bytes.len() && tag_bytes.starts_with(suffix) {
+            return start;
+        }
+    }
+    s.len()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -485,6 +509,15 @@ struct OaiSseStream<S> {
     pending: std::collections::VecDeque<Result<ApiStreamEvent, ApiError>>,
     done: bool,
     model: String,
+    /// Some models (e.g. GLM4.7 via NVIDIA NIM) echo tool calls as plain text
+    /// using `<tool_call>…</tool_call>` tags inside the content delta.
+    /// We suppress these tags so they don't appear in the final text output.
+    ///
+    /// `in_tool_call_tag`: true while consuming text inside a tag block.
+    in_tool_call_tag: bool,
+    /// Partial-tag lookahead buffer: holds text that ends with a prefix of
+    /// `<tool_call>` or `</tool_call>` until we know whether it's really a tag.
+    text_hold: String,
 }
 
 impl<S> OaiSseStream<S>
@@ -503,7 +536,58 @@ where
             pending: Default::default(),
             done: false,
             model: String::new(),
+            in_tool_call_tag: false,
+            text_hold: String::new(),
         }
+    }
+
+    /// Strip `<tool_call>…</tool_call>` blocks that some models (e.g. GLM4.7)
+    /// echo verbatim inside the text content delta alongside the proper
+    /// `tool_calls` JSON field.
+    ///
+    /// Handles tags split across SSE chunks via `self.text_hold` and
+    /// `self.in_tool_call_tag`.  Returns the cleaned text ready to emit.
+    fn clean_text(&mut self, incoming: &str) -> String {
+        self.text_hold.push_str(incoming);
+
+        const OPEN: &str = "<tool_call>";
+        const CLOSE: &str = "</tool_call>";
+
+        let mut out = String::new();
+
+        loop {
+            if self.in_tool_call_tag {
+                // Consume until </tool_call>
+                if let Some(end) = self.text_hold.find(CLOSE) {
+                    let rest = self.text_hold[end + CLOSE.len()..].to_string();
+                    self.text_hold = rest;
+                    self.in_tool_call_tag = false;
+                    // continue to process remaining text
+                } else {
+                    // Still inside tag — discard buffer, wait for more chunks
+                    self.text_hold.clear();
+                    break;
+                }
+            } else {
+                // Look for the next <tool_call>
+                if let Some(start) = self.text_hold.find(OPEN) {
+                    out.push_str(&self.text_hold[..start]);
+                    let rest = self.text_hold[start + OPEN.len()..].to_string();
+                    self.text_hold = rest;
+                    self.in_tool_call_tag = true;
+                    // continue to strip the tag body
+                } else {
+                    // No open tag — but the tail might be a partial prefix of OPEN.
+                    // Hold back any trailing '<' that could begin a tag.
+                    let hold_from = find_partial_prefix(&self.text_hold, OPEN);
+                    out.push_str(&self.text_hold[..hold_from]);
+                    self.text_hold = self.text_hold[hold_from..].to_string();
+                    break;
+                }
+            }
+        }
+
+        out
     }
 
     /// Parse one SSE line and push translated events into `pending`.
@@ -520,14 +604,33 @@ where
         };
 
         if data == "[DONE]" {
-            // Close any open content blocks
+            // Close thinking block if open.
             if let Some(idx) = self.thinking_block_idx.take() {
                 self.pending
                     .push_back(Ok(ApiStreamEvent::ContentBlockStop { index: idx }));
             }
-            if let Some(idx) = self.last_content_idx {
+            // Close text block if open.
+            if let Some(idx) = self.last_content_idx.take() {
                 self.pending
                     .push_back(Ok(ApiStreamEvent::ContentBlockStop { index: idx }));
+            }
+            // Close any tool-call blocks that were never closed by finish_reason.
+            // Some models (e.g. GLM4.7 via NVIDIA NIM) omit finish_reason entirely
+            // even when the response is a tool call.
+            if !self.tool_block_map.is_empty() {
+                for (_, &idx) in &self.tool_block_map {
+                    self.pending
+                        .push_back(Ok(ApiStreamEvent::ContentBlockStop { index: idx }));
+                }
+                self.tool_block_map.clear();
+                // Synthesise the stop_reason the model forgot to send.
+                self.pending.push_back(Ok(ApiStreamEvent::MessageDelta {
+                    delta: MessageDeltaBody {
+                        stop_reason: Some(StopReason::ToolUse),
+                        stop_sequence: None,
+                    },
+                    usage: None,
+                }));
             }
             self.pending.push_back(Ok(ApiStreamEvent::MessageStop));
             self.done = true;
@@ -586,32 +689,40 @@ where
             // Text content delta
             if let Some(text) = &choice.delta.content {
                 if !text.is_empty() {
-                    // Ensure a text content block is open (index 0)
-                    if self.last_content_idx.is_none() {
-                        let idx = self.next_block_idx;
-                        self.next_block_idx += 1;
-                        self.last_content_idx = Some(idx);
+                    // Strip <tool_call>…</tool_call> echo tags (e.g. GLM4.7).
+                    let clean = self.clean_text(text);
+                    if !clean.is_empty() {
+                        // Ensure a text content block is open (index 0)
+                        if self.last_content_idx.is_none() {
+                            let idx = self.next_block_idx;
+                            self.next_block_idx += 1;
+                            self.last_content_idx = Some(idx);
+                            self.pending
+                                .push_back(Ok(ApiStreamEvent::ContentBlockStart {
+                                    index: idx,
+                                    content_block: ContentBlock::Text { text: String::new() },
+                                }));
+                        }
+                        let idx = self.last_content_idx.unwrap();
                         self.pending
-                            .push_back(Ok(ApiStreamEvent::ContentBlockStart {
+                            .push_back(Ok(ApiStreamEvent::ContentBlockDelta {
                                 index: idx,
-                                content_block: ContentBlock::Text { text: String::new() },
+                                delta: ContentDelta::TextDelta { text: clean },
                             }));
                     }
-                    let idx = self.last_content_idx.unwrap();
-                    self.pending
-                        .push_back(Ok(ApiStreamEvent::ContentBlockDelta {
-                            index: idx,
-                            delta: ContentDelta::TextDelta { text: text.clone() },
-                        }));
                 }
             }
 
-            // Thinking / reasoning content delta (Qwen3, DeepSeek-R1, …).
-            // These models stream their chain-of-thought in `reasoning_content`
-            // and the final answer in `content`.  We emit a ThinkingDelta so
-            // that compact_messages (and any other consumer) can capture it.
-            if let Some(reasoning) = &choice.delta.reasoning {
-                if !reasoning.is_empty() {
+            // Thinking / reasoning content delta.
+            // - Ollama (Qwen3, DeepSeek-R1): `reasoning` field
+            // - NVIDIA NIM (GLM4.7) and similar: `reasoning_content` field
+            // Prefer `reasoning_content`; fall back to `reasoning`.
+            let reasoning_text: Option<String> = choice.delta.reasoning_content
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .or_else(|| choice.delta.reasoning.as_deref().filter(|s| !s.is_empty()))
+                .map(|s| s.to_string());
+            if let Some(reasoning) = reasoning_text {
                     let idx = match self.thinking_block_idx {
                         Some(i) => i,
                         None => {
@@ -631,10 +742,9 @@ where
                     self.pending.push_back(Ok(ApiStreamEvent::ContentBlockDelta {
                         index: idx,
                         delta: ContentDelta::ThinkingDelta {
-                            thinking: reasoning.clone(),
+                            thinking: reasoning,
                         },
                     }));
-                }
             }
 
             // Tool call deltas
@@ -887,7 +997,14 @@ impl std::fmt::Debug for OpenAICompatProvider {
 #[async_trait]
 impl ApiProvider for OpenAICompatProvider {
     async fn stream_message(&self, request: MessageRequest) -> Result<ApiStream, ApiError> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        // Normalise base_url: some providers (NVIDIA NIM) already include /v1 in
+        // their base URL, so avoid producing /v1/v1/chat/completions.
+        let base = self.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/v1") {
+            format!("{}/chat/completions", base)
+        } else {
+            format!("{}/v1/chat/completions", base)
+        };
 
         let oai_req = convert_request(&request);
 

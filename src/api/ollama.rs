@@ -130,6 +130,7 @@ struct OllamaChunk {
     done_reason: Option<String>,
     /// Input tokens (present in the final `done: true` chunk).
     #[serde(default)]
+    #[allow(dead_code)]
     prompt_eval_count: u64,
     /// Output tokens (present in the final `done: true` chunk).
     #[serde(default)]

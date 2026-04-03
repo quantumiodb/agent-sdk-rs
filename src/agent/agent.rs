@@ -209,8 +209,10 @@ pub struct AgentOptions {
 
 impl Default for AgentOptions {
     fn default() -> Self {
-        // Honour ANTHROPIC_MODEL env var (compatible with TypeScript SDK convention)
+        // Honour ANTHROPIC_MODEL / OPENAI_MODEL env vars.
+        // ANTHROPIC_MODEL takes precedence (TypeScript SDK convention).
         let model = std::env::var("ANTHROPIC_MODEL")
+            .or_else(|_| std::env::var("OPENAI_MODEL"))
             .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
         Self {
             api: ApiClientConfig::FromEnv,

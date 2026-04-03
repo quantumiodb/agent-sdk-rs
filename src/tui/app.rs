@@ -203,6 +203,10 @@ impl TuiApp {
                     KeyCode::Char('u') if ctrl => {
                         self.state.kill_to_start();
                     }
+                    // Toggle copy mode (disable/enable mouse capture).
+                    KeyCode::Char('x') if ctrl => {
+                        self.toggle_copy_mode();
+                    }
                     // Cursor to start.
                     KeyCode::Char('a') if ctrl => {
                         self.state.cursor_home();
@@ -378,13 +382,14 @@ impl TuiApp {
                 }
             },
             SDKMessage::Assistant { message, .. } => {
-                // Full assistant message -- may contain tool_use blocks.
+                // Full assistant message -- capture tool_use blocks with their inputs.
                 for block in &message.content {
-                    match block {
-                        ContentBlock::ToolUse { name, .. } => {
-                            self.state.status = AgentStatus::RunningTool(name.clone());
-                        }
-                        _ => {}
+                    if let ContentBlock::ToolUse { id, name, input } = block {
+                        self.state.pending_tools.insert(
+                            id.clone(),
+                            (name.clone(), input.clone()),
+                        );
+                        self.state.status = AgentStatus::RunningTool(name.clone());
                     }
                 }
             }
@@ -394,13 +399,27 @@ impl TuiApp {
                 self.state.status = AgentStatus::RunningTool(tool_name.clone());
             }
             SDKMessage::ToolResult {
+                tool_use_id,
                 tool_name,
                 content,
                 is_error,
-                ..
             } => {
                 let status = if is_error { "FAILED" } else { "OK" };
+
+                // Build header: [ToolName] OK  + input parameters
                 let mut result_text = format!("[{tool_name}] {status}");
+
+                // Look up the original tool invocation input.
+                if let Some((_, input)) = self.state.pending_tools.remove(&tool_use_id) {
+                    let params = format_tool_input(&tool_name, &input);
+                    if !params.is_empty() {
+                        result_text.push('\n');
+                        result_text.push_str(&params);
+                    }
+                }
+
+                // Separator before output.
+                result_text.push_str("\n───");
 
                 for c in &content {
                     match c {
@@ -411,7 +430,7 @@ impl TuiApp {
                             }
                         }
                         ToolResultContent::Image { .. } => {
-                            result_text.push_str("\n  [image]");
+                            result_text.push_str("\n[image]");
                         }
                     }
                 }
@@ -468,6 +487,16 @@ impl TuiApp {
                 );
             }
             SDKMessage::KeepAlive => {}
+        }
+    }
+
+    /// Toggle copy mode: disable mouse capture so terminal-native selection works.
+    fn toggle_copy_mode(&mut self) {
+        self.state.copy_mode = !self.state.copy_mode;
+        if self.state.copy_mode {
+            let _ = execute!(self.terminal.backend_mut(), DisableMouseCapture);
+        } else {
+            let _ = execute!(self.terminal.backend_mut(), EnableMouseCapture);
         }
     }
 
@@ -552,6 +581,108 @@ fn detect_provider(options: &AgentOptions) -> String {
                 "Unknown".into()
             }
         }
+    }
+}
+
+/// Format tool input parameters for display.
+///
+/// Produces a human-readable summary such as:
+///   $ ls -la /tmp          (Bash)
+///   file: /src/main.rs     (Read)
+///   pattern: "TODO" path: src/  (Grep)
+fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
+    let obj = match input.as_object() {
+        Some(o) => o,
+        None => return format!("{input}"),
+    };
+
+    match tool_name {
+        "Bash" => {
+            let cmd = obj.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let timeout = obj.get("timeout").and_then(|v| v.as_u64());
+            let desc = obj.get("description").and_then(|v| v.as_str());
+            let mut out = format!("$ {cmd}");
+            if let Some(t) = timeout {
+                out.push_str(&format!("  (timeout: {t}ms)"));
+            }
+            if let Some(d) = desc {
+                out.push_str(&format!("  # {d}"));
+            }
+            out
+        }
+        "Read" => {
+            let path = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            let mut out = format!("file: {path}");
+            if let Some(offset) = obj.get("offset").and_then(|v| v.as_u64()) {
+                out.push_str(&format!("  offset: {offset}"));
+            }
+            if let Some(limit) = obj.get("limit").and_then(|v| v.as_u64()) {
+                out.push_str(&format!("  limit: {limit}"));
+            }
+            out
+        }
+        "Write" => {
+            let path = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let lines = content.lines().count();
+            format!("file: {path}  ({lines} lines)")
+        }
+        "Edit" => {
+            let path = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+            let old = obj.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+            let new = obj.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+            let old_preview = truncate_str(old, 60);
+            let new_preview = truncate_str(new, 60);
+            format!("file: {path}\n  - {old_preview}\n  + {new_preview}")
+        }
+        "Glob" => {
+            let pattern = obj.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+            let path = obj.get("path").and_then(|v| v.as_str());
+            let mut out = format!("pattern: {pattern}");
+            if let Some(p) = path {
+                out.push_str(&format!("  path: {p}"));
+            }
+            out
+        }
+        "Grep" => {
+            let pattern = obj.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+            let path = obj.get("path").and_then(|v| v.as_str());
+            let glob = obj.get("glob").and_then(|v| v.as_str());
+            let mut out = format!("pattern: \"{pattern}\"");
+            if let Some(p) = path {
+                out.push_str(&format!("  path: {p}"));
+            }
+            if let Some(g) = glob {
+                out.push_str(&format!("  glob: {g}"));
+            }
+            out
+        }
+        // Generic fallback: show all key=value pairs.
+        _ => {
+            let mut parts: Vec<String> = Vec::new();
+            for (key, val) in obj {
+                let display = match val {
+                    serde_json::Value::String(s) => truncate_str(s, 80),
+                    other => {
+                        let s = other.to_string();
+                        truncate_str(&s, 80)
+                    }
+                };
+                parts.push(format!("{key}: {display}"));
+            }
+            parts.join("\n")
+        }
+    }
+}
+
+/// Truncate a string for display, appending "…" if it exceeds `max_chars`.
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    let first_line = s.lines().next().unwrap_or(s);
+    if first_line.chars().count() <= max_chars {
+        first_line.to_string()
+    } else {
+        let truncated: String = first_line.chars().take(max_chars).collect();
+        format!("{truncated}…")
     }
 }
 

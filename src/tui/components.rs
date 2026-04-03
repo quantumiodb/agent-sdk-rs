@@ -356,10 +356,17 @@ impl Widget for StatusBar<'_> {
         ]);
         Paragraph::new(cost_line).render(chunks[2], buf);
 
-        // Help hint
-        let help_line = Line::from(vec![
-            Span::styled(" Ctrl+H help ", Style::default().fg(FG_DIM)),
-        ]);
+        // Help hint / copy mode indicator
+        let help_line = if self.state.copy_mode {
+            Line::from(vec![
+                Span::styled(" COPY MODE ", Style::default().fg(Color::Rgb(20, 20, 30)).bg(ACCENT_YELLOW).add_modifier(Modifier::BOLD)),
+                Span::styled(" Ctrl+X exit ", Style::default().fg(ACCENT_YELLOW)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(" Ctrl+H help ", Style::default().fg(FG_DIM)),
+            ])
+        };
         Paragraph::new(help_line).render(chunks[3], buf);
     }
 }
@@ -399,6 +406,10 @@ impl Widget for HelpOverlay {
             Line::from(vec![
                 Span::styled("  Ctrl+H      ", Style::default().fg(ACCENT_BLUE)),
                 Span::styled("Toggle this help", Style::default().fg(FG_TEXT)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Ctrl+X      ", Style::default().fg(ACCENT_BLUE)),
+                Span::styled("Toggle copy mode (mouse select)", Style::default().fg(FG_TEXT)),
             ]),
             Line::from(vec![
                 Span::styled("  Ctrl+L      ", Style::default().fg(ACCENT_BLUE)),

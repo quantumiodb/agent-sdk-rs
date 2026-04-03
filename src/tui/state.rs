@@ -1,6 +1,6 @@
 //! TUI application state.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// A single chat message displayed in the TUI.
 #[derive(Debug, Clone)]
@@ -77,6 +77,10 @@ pub struct AppState {
     pub should_quit: bool,
     /// Whether the help overlay is visible.
     pub show_help: bool,
+    /// Copy mode: mouse capture disabled, native terminal selection enabled.
+    pub copy_mode: bool,
+    /// Pending tool invocations: tool_use_id → (tool_name, input JSON).
+    pub pending_tools: HashMap<String, (String, serde_json::Value)>,
     /// Streaming text accumulator for the current assistant response.
     pub streaming_text: String,
     /// Streaming text accumulator for the current thinking block.
@@ -108,6 +112,8 @@ impl AppState {
             num_turns: 0,
             should_quit: false,
             show_help: false,
+            copy_mode: false,
+            pending_tools: HashMap::new(),
             streaming_text: String::new(),
             streaming_thinking: String::new(),
             in_thinking: false,

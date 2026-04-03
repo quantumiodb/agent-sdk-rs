@@ -13,7 +13,6 @@
 # Takes priority over ANTHROPIC_BASE_URL in from_env().
 OLLAMA_BASE_URL = "http://yjhnupt.tech:11434"
 OLLAMA_MODEL    = "qwen3.5:latest"
-# OLLAMA_THINK = "false"   # uncomment to disable chain-of-thought
 
 # Ensure yjhnupt.tech bypasses the system proxy regardless of shell state.
 NO_PROXY = { value = "code.hashdata.xyz,localhost,127.0.0.1,192.168.198.78,yjhnupt.tech", force = true }

@@ -232,14 +232,7 @@ impl ApiClient {
         //
         // ── Ollama (native /api/chat protocol) ───────────────────────────────
         if let Ok(base_url) = std::env::var("OLLAMA_BASE_URL") {
-            let think = std::env::var("OLLAMA_THINK")
-                .ok()
-                .and_then(|v| match v.to_lowercase().as_str() {
-                    "true" | "1"  => Some(true),
-                    "false" | "0" => Some(false),
-                    _ => None,
-                });
-            return Ok(Self::ollama(base_url, think));
+            return Ok(Self::ollama(base_url, None));
         }
 
         // Custom base URL handling.

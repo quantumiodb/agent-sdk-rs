@@ -361,6 +361,9 @@ struct AnthropicProvider {
     api_key: String,
     base_url: String,
     http_client: reqwest::Client,
+    /// Ollama-specific context window size injected via `ANTHROPIC_NUM_CTX`.
+    /// When set, merged into the request body as `{"options":{"num_ctx":N}}`.
+    num_ctx: Option<u32>,
 }
 
 impl AnthropicProvider {
@@ -369,14 +372,19 @@ impl AnthropicProvider {
             api_key,
             base_url: "https://api.anthropic.com".to_string(),
             http_client: reqwest::Client::new(),
+            num_ctx: None,
         }
     }
 
     fn with_base_url(api_key: String, base_url: String) -> Self {
+        let num_ctx = std::env::var("ANTHROPIC_NUM_CTX")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok());
         Self {
             api_key,
             base_url,
             http_client: reqwest::Client::new(),
+            num_ctx,
         }
     }
 }
@@ -398,11 +406,32 @@ impl ApiProvider for AnthropicProvider {
             HeaderValue::from_static("2023-06-01"),
         );
 
+        // Build request body, optionally merging Ollama-specific options.
+        let body = if let Some(num_ctx) = self.num_ctx {
+            let mut obj = serde_json::to_value(&request)
+                .map_err(|e| ApiError::InvalidResponse {
+                    message: format!("Failed to serialize request: {e}"),
+                    body: String::new(),
+                })?;
+            obj.as_object_mut()
+                .unwrap()
+                .insert("options".into(), serde_json::json!({"num_ctx": num_ctx}));
+            serde_json::to_vec(&obj).map_err(|e| ApiError::InvalidResponse {
+                message: format!("Failed to serialize request: {e}"),
+                body: String::new(),
+            })?
+        } else {
+            serde_json::to_vec(&request).map_err(|e| ApiError::InvalidResponse {
+                message: format!("Failed to serialize request: {e}"),
+                body: String::new(),
+            })?
+        };
+
         let response: reqwest::Response = self
             .http_client
             .post(&url)
             .headers(headers)
-            .json(&request)
+            .body(body)
             .send()
             .await
             .map_err(|e| ApiError::Network {

@@ -153,6 +153,7 @@ impl MessageList<'_> {
             }
 
             // Message text, wrapped by character width (CJK-safe).
+            let is_tool = msg.role == ChatRole::Tool;
             for text_line in msg.text.lines() {
                 if text_line.is_empty() {
                     lines.push(Line::from(""));
@@ -161,16 +162,25 @@ impl MessageList<'_> {
                 // Indent: thinking uses "│ " gutter, others use "  ".
                 let indent_display_width: usize = if is_thinking { 4 } else { 2 };
                 let effective_width = w.saturating_sub(indent_display_width + 1);
+
+                // For tool messages, apply git-diff coloring per-line (applied to
+                // all wrapped chunks from that original line).
+                let effective_style = if is_tool {
+                    diff_line_style(text_line).unwrap_or(text_style)
+                } else {
+                    text_style
+                };
+
                 if effective_width == 0 {
                     if is_thinking {
                         lines.push(Line::from(vec![
                             Span::styled("  │ ", Style::default().fg(FG_DIM)),
-                            Span::styled(text_line.to_string(), text_style),
+                            Span::styled(text_line.to_string(), effective_style),
                         ]));
                     } else {
                         lines.push(Line::from(Span::styled(
                             format!("  {text_line}"),
-                            text_style,
+                            effective_style,
                         )));
                     }
                     continue;
@@ -179,12 +189,12 @@ impl MessageList<'_> {
                     if is_thinking {
                         lines.push(Line::from(vec![
                             Span::styled("  │ ", Style::default().fg(FG_DIM)),
-                            Span::styled(chunk, text_style),
+                            Span::styled(chunk, effective_style),
                         ]));
                     } else {
                         lines.push(Line::from(Span::styled(
                             format!("  {chunk}"),
-                            text_style,
+                            effective_style,
                         )));
                     }
                 }
@@ -473,6 +483,32 @@ impl Widget for HelpOverlay {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Returns a git-diff–style override `Style` for a line inside a Tool message.
+/// `None` means use the default text style.
+///
+/// Coloring rules:
+///   `--- ` / `+++ `  → bold (file header)
+///   `@@ … @@`        → teal bold (hunk header)
+///   `-` (not `---`)  → red (deletion)
+///   `+` (not `+++`)  → green (addition)
+///   ` ` prefix       → dim (unchanged context)
+fn diff_line_style(line: &str) -> Option<Style> {
+    if line.starts_with("--- ") || line.starts_with("+++ ") {
+        Some(Style::default().fg(FG_TEXT).add_modifier(Modifier::BOLD))
+    } else if line.starts_with("@@ ") && line.contains(" @@") {
+        Some(Style::default().fg(ACCENT_TEAL).add_modifier(Modifier::BOLD))
+    } else if line.starts_with('-') && !line.starts_with("---") {
+        Some(Style::default().fg(ACCENT_RED))
+    } else if line.starts_with('+') && !line.starts_with("+++") {
+        Some(Style::default().fg(ACCENT_GREEN))
+    } else if line.starts_with(' ') {
+        // Context lines: slightly dimmed so +/- stand out.
+        Some(Style::default().fg(FG_DIM))
+    } else {
+        None
+    }
+}
 
 fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {

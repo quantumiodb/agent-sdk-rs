@@ -645,9 +645,7 @@ fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
             let path = obj.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
             let old = obj.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
             let new = obj.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
-            let old_preview = truncate_str(old, 60);
-            let new_preview = truncate_str(new, 60);
-            format!("file: {path}\n  - {old_preview}\n  + {new_preview}")
+            format_edit_diff(path, old, new)
         }
         "Glob" => {
             let pattern = obj.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
@@ -687,6 +685,32 @@ fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
             parts.join("\n")
         }
     }
+}
+
+/// Generate a git-diff–style unified diff for the Edit tool.
+/// Requires the `built-in-tools` feature (which includes the `similar` crate).
+#[cfg(feature = "built-in-tools")]
+fn format_edit_diff(path: &str, old: &str, new: &str) -> String {
+    use similar::TextDiff;
+    let diff = TextDiff::from_lines(old, new);
+    let diff_text = diff
+        .unified_diff()
+        .context_radius(3)
+        .header(&format!("a/{path}"), &format!("b/{path}"))
+        .to_string();
+    if diff_text.trim().is_empty() {
+        format!("file: {path}  (no changes)")
+    } else {
+        format!("file: {path}\n{}", diff_text.trim_end())
+    }
+}
+
+/// Fallback when `built-in-tools` is not enabled.
+#[cfg(not(feature = "built-in-tools"))]
+fn format_edit_diff(path: &str, old: &str, new: &str) -> String {
+    let old_preview = truncate_str(old, 60);
+    let new_preview = truncate_str(new, 60);
+    format!("file: {path}\n  - {old_preview}\n  + {new_preview}")
 }
 
 /// Truncate a string for display, appending "…" if it exceeds `max_chars`.

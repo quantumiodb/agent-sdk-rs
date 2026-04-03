@@ -219,14 +219,56 @@ impl ApiClient {
     /// 2. `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` → native Anthropic provider
     /// 3. `OPENAI_API_KEY` → OpenAI-compat provider (uses `OPENAI_BASE_URL` if set)
     pub fn from_env() -> Result<Self, ApiError> {
-        // Custom base URL → OpenAI-compat mode (Ollama / LiteLLM / vLLM)
+        // ── Provider detection order ──────────────────────────────────────────
+        //
+        // 1. OLLAMA_BASE_URL            → native OllamaProvider (/api/chat)
+        // 2. ANTHROPIC_BASE_URL
+        //      + ANTHROPIC_API_FORMAT=anthropic → AnthropicProvider (custom URL)
+        //      (default)                        → OpenAICompatProvider
+        // 3. ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN (no BASE_URL)
+        //                               → AnthropicProvider (api.anthropic.com)
+        // 4. OPENAI_API_KEY             → OpenAICompatProvider
+        //                                 (OPENAI_BASE_URL if set, else api.openai.com)
+        //
+        // ── Ollama (native /api/chat protocol) ───────────────────────────────
+        if let Ok(base_url) = std::env::var("OLLAMA_BASE_URL") {
+            let think = std::env::var("OLLAMA_THINK")
+                .ok()
+                .and_then(|v| match v.to_lowercase().as_str() {
+                    "true" | "1"  => Some(true),
+                    "false" | "0" => Some(false),
+                    _ => None,
+                });
+            return Ok(Self::ollama(base_url, think));
+        }
+
+        // Custom base URL handling.
+        //
+        // ANTHROPIC_API_FORMAT controls the wire format sent to the custom URL:
+        //   "anthropic" → native Anthropic Messages API format (/v1/messages)
+        //   "openai"    → OpenAI Chat Completions format (/v1/chat/completions) [default]
+        //
+        // Example — LiteLLM proxy speaking Anthropic format:
+        //   ANTHROPIC_BASE_URL=http://proxy:4000
+        //   ANTHROPIC_AUTH_TOKEN=sk-...
+        //   ANTHROPIC_API_FORMAT=anthropic
         if let Ok(base_url) = std::env::var("ANTHROPIC_BASE_URL") {
             let api_key = std::env::var("ANTHROPIC_AUTH_TOKEN")
                 .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-                .unwrap_or_else(|_| "ollama".to_string()); // local servers don't need a key
+                .unwrap_or_else(|_| "ollama".to_string());
 
-            // If the host doesn't go through a proxy (ANTHROPIC_NO_PROXY=1 or
-            // the base_url looks like a local/private address), bypass proxy.
+            let format = std::env::var("ANTHROPIC_API_FORMAT")
+                .unwrap_or_default();
+
+            if format.eq_ignore_ascii_case("anthropic") {
+                return Ok(Self {
+                    provider: Box::new(AnthropicProvider::with_base_url(api_key, base_url)),
+                    retry_config: RetryConfig::default(),
+                    http_client: reqwest::Client::new(),
+                });
+            }
+
+            // Default: OpenAI-compat mode (Ollama / LiteLLM / vLLM)
             let no_proxy = std::env::var("ANTHROPIC_NO_PROXY")
                 .map(|v| v == "1" || v.to_lowercase() == "true")
                 .unwrap_or(false)
@@ -329,6 +371,14 @@ impl AnthropicProvider {
         Self {
             api_key,
             base_url: "https://api.anthropic.com".to_string(),
+            http_client: reqwest::Client::new(),
+        }
+    }
+
+    fn with_base_url(api_key: String, base_url: String) -> Self {
+        Self {
+            api_key,
+            base_url,
             http_client: reqwest::Client::new(),
         }
     }

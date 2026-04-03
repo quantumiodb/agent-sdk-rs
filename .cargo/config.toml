@@ -1,0 +1,25 @@
+# Cargo workspace configuration
+#
+# Environment variables automatically injected into `cargo test`, `cargo run`, etc.
+# Variables with `force = true` override any value already set in the shell.
+#
+# ANTHROPIC_AUTH_TOKEN is intentionally omitted — set it in your shell:
+#   export ANTHROPIC_AUTH_TOKEN=<your-token>
+#
+# Docs: https://doc.rust-lang.org/cargo/reference/config.html#env
+
+[env]
+# Ollama — native /api/chat protocol (OllamaProvider).
+# Takes priority over ANTHROPIC_BASE_URL in from_env().
+OLLAMA_BASE_URL = "http://yjhnupt.tech:11434"
+OLLAMA_MODEL    = "qwen3.5:latest"
+# OLLAMA_THINK = "false"   # uncomment to disable chain-of-thought
+
+# Ensure yjhnupt.tech bypasses the system proxy regardless of shell state.
+NO_PROXY = { value = "code.hashdata.xyz,localhost,127.0.0.1,192.168.198.78,yjhnupt.tech", force = true }
+
+# NVIDIA NIM — used by examples/nvidia_nim.rs and `cargo run --example openai -- nvidia`.
+# Dedicated var names avoid conflicts with OPENAI_API_KEY / ANTHROPIC_* in the shell.
+NVIDIA_API_KEY  = "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"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL    = "z-ai/glm4.7"

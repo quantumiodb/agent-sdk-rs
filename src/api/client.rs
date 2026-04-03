@@ -231,8 +231,10 @@ impl ApiClient {
         //                                 (OPENAI_BASE_URL if set, else api.openai.com)
         //
         // ── Ollama (native /api/chat protocol) ───────────────────────────────
-        if let Ok(base_url) = std::env::var("OLLAMA_BASE_URL") {
-            return Ok(Self::ollama(base_url, None));
+        if let Ok(base_url) = std::env::var("OLLAMA_BASE_URL").map(|s| s.trim().to_string()) {
+            if !base_url.is_empty() {
+                return Ok(Self::ollama(base_url, None));
+            }
         }
 
         // Custom base URL handling.
@@ -245,7 +247,9 @@ impl ApiClient {
         //   ANTHROPIC_BASE_URL=http://proxy:4000
         //   ANTHROPIC_AUTH_TOKEN=sk-...
         //   ANTHROPIC_API_FORMAT=anthropic
-        if let Ok(base_url) = std::env::var("ANTHROPIC_BASE_URL") {
+        if let Some(base_url) = std::env::var("ANTHROPIC_BASE_URL").ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()) {
             let api_key = std::env::var("ANTHROPIC_AUTH_TOKEN")
                 .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
                 .unwrap_or_else(|_| "ollama".to_string());
